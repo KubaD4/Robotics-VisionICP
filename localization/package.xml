@@ -12,6 +12,7 @@
   <exec_depend>sensor_msgs</exec_depend> <!-- Provides PointCloud2 message type -->
   <exec_depend>cv_bridge</exec_depend> <!-- Converts between ROS and OpenCV formats -->
   <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>nvidia-cuda-toolkit</exec_depend>
 
   <!-- Python libraries -->
   <exec_depend>python3-ultralytics-pip</exec_depend> <!-- YOLO model -->
