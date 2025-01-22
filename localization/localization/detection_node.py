@@ -13,7 +13,7 @@ from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation
 import copy
 import time
-
+from localization_interfaces.srv import BlockInfoAll
 
 class DetectionNode(Node):
     """
@@ -40,9 +40,12 @@ class DetectionNode(Node):
         self.processed_classes = set()
         
         # ICP parameters
-        self.max_icp_iterations = 100
-        self.icp_tolerance = 1e-6
+        self.max_icp_iterations = 300
+        self.icp_tolerance = 1e-7
         self.object_poses = []
+
+        # Service
+        self.srv = self.create_service(BlockInfoAll, 'localization_service', self.handle_all_block_info_request)
 
         # Publishers and subscribers setup
         self.vis_publisher = self.create_publisher(ROSImg, '/object_pose_visualization', 10)
@@ -51,6 +54,40 @@ class DetectionNode(Node):
         
         self.model = YOLO("/home/ubuntu/ros2_ws/src/my_code/localization/yolo_weights/best.pt")
         self.bridge = CvBridge()
+
+    def handle_all_block_info_request(self, request, response):
+        """Handle service request for block information, sorted by distance from camera"""
+        if not self.object_poses:
+            response.success = False
+            return response
+
+        # Calculate distances and create block info list
+        block_infos = []
+        for pose in self.object_poses:
+            position = pose['position']
+            distance = np.sqrt(position[0]**2 + position[1]**2 + position[2]**2)
+            
+            block_infos.append({
+                'distance': distance,
+                'name': pose['class_name'],
+                'position': position,
+                'quaternion': pose['quaternion']
+            })
+
+        # Sort by distance from camera (descending)
+        block_infos.sort(key=lambda x: x['distance'], reverse=True)
+
+        # Fill response
+        response.block_names = [block['name'] for block in block_infos]
+        response.positions_x = [float(block['position'][0]) for block in block_infos]
+        response.positions_y = [float(block['position'][1]) for block in block_infos]
+        response.positions_z = [float(block['position'][2]) for block in block_infos]
+        response.orientations_x = [float(block['quaternion'][0]) for block in block_infos]
+        response.orientations_y = [float(block['quaternion'][1]) for block in block_infos]
+        response.orientations_z = [float(block['quaternion'][2]) for block in block_infos]
+        response.orientations_w = [float(block['quaternion'][3]) for block in block_infos]
+    
+        return response
 
     def load_stl_model(self, class_idx):
         """Load and convert STL model to pointcloud for a given class index"""
@@ -338,37 +375,6 @@ class DetectionNode(Node):
                 f"Orientation (r,p,y): {pose_params['euler_angles']}\n"
                 f"Alignment error: {error}"
             )
-            
-            self.visualize_pose(detected['points'], stl_model['points'], R, t)
-
-    def visualize_pose(self, scene_points, model_points, R, t):
-        """Visualize alignment results with original and transformed points"""
-        try:
-            vis_img = np.zeros((480, 640, 3), dtype=np.uint8)
-            scale = 100
-            offset = np.array([320, 240])
-            
-            for point in scene_points:
-                x, y = (point[:2] * scale + offset).astype(int)
-                if 0 <= x < 640 and 0 <= y < 480:
-                    cv2.circle(vis_img, (x, y), 1, (0, 0, 255), -1)
-            
-            transformed_points = self.apply_transformation(model_points, R, t)
-            for point in transformed_points:
-                x, y = (point[:2] * scale + offset).astype(int)
-                if 0 <= x < 640 and 0 <= y < 480:
-                    cv2.circle(vis_img, (x, y), 1, (0, 255, 0), -1)
-            
-            # Convert to ROS image and publish
-            ros_img = self.bridge.cv2_to_imgmsg(vis_img, encoding='bgr8')
-            self.vis_publisher.publish(ros_img)
-            
-            # Also show in OpenCV window for debugging
-            cv2.imshow('ICP Alignment Result', vis_img)
-            cv2.waitKey(1)
-            
-        except Exception as e:
-                self.get_logger().error(f"Error in pose visualization: {str(e)}")
 
 def main(args=None):
     rclpy.init(args=args)
