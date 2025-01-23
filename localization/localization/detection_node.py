@@ -36,58 +36,100 @@ class DetectionNode(Node):
         self.current_detections = []
         self.detection_pointclouds = []
         self.latest_point_cloud = None
+        self.latest_image = None
         self.stl_pointclouds = []
         self.processed_classes = set()
-        
+        self.object_poses = []
+
         # ICP parameters
         self.max_icp_iterations = 300
         self.icp_tolerance = 1e-7
-        self.object_poses = []
 
         # Service
         self.srv = self.create_service(BlockInfoAll, 'localization_service', self.handle_all_block_info_request)
 
         # Publishers and subscribers setup
-        self.vis_publisher = self.create_publisher(ROSImg, '/object_pose_visualization', 10)
-        self.subscription_img = self.create_subscription(ROSImg, '/camera/image_raw/image', self.detect, 10)
-        self.subscription_pcl = self.create_subscription(PointCloud2, '/camera/image_raw/points', self.process_point_cloud, 10)
+        self.vis_publisher = self.create_publisher(ROSImg, '/object_pose_visualization', 5)
+        self.subscription_img = self.create_subscription(ROSImg, '/camera/image_raw/image', self.store_image, 5)
+        self.subscription_pcl = self.create_subscription(PointCloud2, '/camera/image_raw/points', self.store_pointcloud, 5)
         
         self.model = YOLO("/home/ubuntu/ros2_ws/src/my_code/localization/yolo_weights/best.pt")
         self.bridge = CvBridge()
 
+        self.get_logger().info("Detection node initialized and waiting for service requests...") # Idle --> waiting for a request 
+
+    def store_image(self, msg):
+        """Just store the latest image"""
+        self.latest_image = msg
+
+    def store_pointcloud(self, msg):
+        """Just store the latest pointcloud"""
+        self.latest_point_cloud = msg
+
     def handle_all_block_info_request(self, request, response):
-        """Handle service request for block information, sorted by distance from camera"""
-        if not self.object_poses:
-            response.success = False
-            return response
-
-        # Calculate distances and create block info list
-        block_infos = []
-        for pose in self.object_poses:
-            position = pose['position']
-            distance = np.sqrt(position[0]**2 + position[1]**2 + position[2]**2)
+        """Handle service request for block information"""
+        try:
+            self.get_logger().info("Received block info request - starting processing")
             
-            block_infos.append({
-                'distance': distance,
-                'name': pose['class_name'],
-                'position': position,
-                'quaternion': pose['quaternion']
-            })
+            # Check if we have both required messages
+            time.sleep(10)
+            if self.latest_image is None or self.latest_point_cloud is None:
+                self.get_logger().error("No camera messages available")
+                return response
 
-        # Sort by distance from camera (descending)
-        block_infos.sort(key=lambda x: x['distance'], reverse=True)
+            # Process the latest data
+            self.detect(self.latest_image)
+            
+            # Wait for processing to complete
+            max_attempts = 100  # 10 seconds
+            attempt = 0
+            
+            while attempt < max_attempts:
+                if self.object_poses:
+                    # Calculate distances and create block info list
+                    block_infos = []
+                    for pose in self.object_poses:
+                        position = pose['position']
+                        distance = np.sqrt(position[0]**2 + position[1]**2 + position[2]**2)
+                        
+                        block_infos.append({
+                            'distance': distance,
+                            'name': pose['class_name'],
+                            'position': position,
+                            'quaternion': pose['quaternion']
+                        })
 
-        # Fill response
-        response.block_names = [block['name'] for block in block_infos]
-        response.positions_x = [float(block['position'][0]) for block in block_infos]
-        response.positions_y = [float(block['position'][1]) for block in block_infos]
-        response.positions_z = [float(block['position'][2]) for block in block_infos]
-        response.orientations_x = [float(block['quaternion'][0]) for block in block_infos]
-        response.orientations_y = [float(block['quaternion'][1]) for block in block_infos]
-        response.orientations_z = [float(block['quaternion'][2]) for block in block_infos]
-        response.orientations_w = [float(block['quaternion'][3]) for block in block_infos]
-    
-        return response
+                    # Sort by distance from camera (descending)
+                    block_infos.sort(key=lambda x: x['distance'], reverse=True)
+
+                    # Fill response
+                    response.block_names = [block['name'] for block in block_infos]
+                    response.positions_x = [float(block['position'][0]) for block in block_infos]
+                    response.positions_y = [float(block['position'][1]) for block in block_infos]
+                    response.positions_z = [float(block['position'][2]) for block in block_infos]
+                    response.orientations_x = [float(block['quaternion'][0]) for block in block_infos]
+                    response.orientations_y = [float(block['quaternion'][1]) for block in block_infos]
+                    response.orientations_z = [float(block['quaternion'][2]) for block in block_infos]
+                    response.orientations_w = [float(block['quaternion'][3]) for block in block_infos]
+                    
+                    self.get_logger().info(f"Successfully processed {len(block_infos)} blocks")
+                    
+                    # Clear data for next request
+                    self.object_poses = []
+                    self.current_detections = []
+                    self.detection_pointclouds = []
+                    return response
+                
+                attempt += 1
+                time.sleep(0.1)
+            
+            # If we get here, processing timed out
+            self.get_logger().warn("Processing timed out - no blocks detected")
+            return response
+            
+        except Exception as e:
+            self.get_logger().error(f"Error processing request: {str(e)}")
+            return response
 
     def load_stl_model(self, class_idx):
         """Load and convert STL model to pointcloud for a given class index"""
@@ -121,6 +163,7 @@ class DetectionNode(Node):
     def detect(self, ros2_img):
         """Process incoming images for object detection using YOLO"""
         try:
+            self.get_logger().warn("DETECT")
             cv_image = self.bridge.imgmsg_to_cv2(ros2_img, desired_encoding='passthrough')
             results = self.model.predict(source=cv_image, conf=0.25)
             
@@ -152,6 +195,7 @@ class DetectionNode(Node):
 
     def process_point_cloud(self, msg):
         """Store incoming point cloud data and process if detections exist"""
+        self.get_logger().warn("PROCESS")
         self.latest_point_cloud = msg
         if self.current_detections:
             self.extract_pointcloud_portions()
