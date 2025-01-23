@@ -72,7 +72,16 @@ class DetectionNode(Node):
             self.get_logger().info("Received block info request - starting processing")
             
             # Check if we have both required messages
-            time.sleep(10)
+            step = 0
+            step_limit = 10 # 10 seconds
+            while step < step_limit:
+                if self.latest_image is not None and self.latest_point_cloud is not None:
+                    self.get_logger().warn(f"image and pointcloud ready after {step} seconds\n")
+                    break  # Both data are ready, exit loop
+                time.sleep(1)  # Wait for 1 second before checking again
+                step += 1
+                self.get_logger().warn(f"image or pointcloud still not ready, waited {step} seconds\n")
+            # if after 10 seconds image or pointcloud still not ready, return
             if self.latest_image is None or self.latest_point_cloud is None:
                 self.get_logger().error("No camera messages available")
                 return response
@@ -112,12 +121,13 @@ class DetectionNode(Node):
                     response.orientations_z = [float(block['quaternion'][2]) for block in block_infos]
                     response.orientations_w = [float(block['quaternion'][3]) for block in block_infos]
                     
-                    self.get_logger().info(f"Successfully processed {len(block_infos)} blocks")
+                    self.get_logger().info(f"Successfully processed {len(block_infos)} blocks\n\n")
                     
                     # Clear data for next request
                     self.object_poses = []
                     self.current_detections = []
                     self.detection_pointclouds = []
+                    self.get_logger().info("Detection node waiting for service requests...") # Idle --> waiting for a request 
                     return response
                 
                 attempt += 1
